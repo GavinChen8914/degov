@@ -2,7 +2,7 @@ import Image from "next/image";
 import { useCallback } from "react";
 import { useDropzone } from "react-dropzone";
 
-import type { XAccountContent } from "@/app/proposals/new/schema";
+import type { XAccountContent } from "@/components/schema";
 import { cn } from "@/lib/utils";
 
 interface XAccountFileUploaderProps {

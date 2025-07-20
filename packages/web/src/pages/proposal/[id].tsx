@@ -1,0 +1,334 @@
+"use client";
+import { useQueries, useQuery } from "@tanstack/react-query";
+import { isNil } from "lodash-es";
+import Link from "next/link";
+import { useRouter } from "next/router";
+import { useCallback, useMemo } from "react";
+import { useReadContract } from "wagmi";
+
+import { AddressWithAvatar } from "@/components/address-with-avatar";
+import ClipboardIconButton from "@/components/clipboard-icon-button";
+import { Faqs } from "@/components/faqs";
+import NotFound from "@/components/not-found";
+import { ProposalStatus } from "@/components/proposal-status";
+import { Skeleton } from "@/components/ui/skeleton";
+import { abi as GovernorAbi } from "@/config/abi/governor";
+import { DEFAULT_REFETCH_INTERVAL } from "@/config/base";
+import { useDaoConfig } from "@/hooks/useDaoConfig";
+import { proposalService } from "@/services/graphql";
+import { ProposalState } from "@/types/proposal";
+import { extractTitleAndDescription, parseDescription } from "@/utils";
+import { formatTimestampToFriendlyDate } from "@/utils/date";
+
+import ActionGroup from "../../components/action-group";
+import { CurrentVotes } from "../../components/current-votes";
+import Status from "../../components/status";
+import { Tabs } from "../../components/tabs";
+
+const ACTIVE_STATES: ProposalState[] = [
+  ProposalState.Pending,
+  ProposalState.Active,
+  ProposalState.Succeeded,
+  ProposalState.Queued,
+];
+
+export default function ProposalDetailPage() {
+  const daoConfig = useDaoConfig();
+  const router = useRouter();
+  const { id } = router.query;
+
+  const proposalStatus = useReadContract({
+    address: daoConfig?.contracts?.governor as `0x${string}`,
+    abi: GovernorAbi,
+    functionName: "state",
+    args: [id ? BigInt(id as string) : 0n],
+    chainId: daoConfig?.chain?.id,
+    query: {
+      refetchInterval: DEFAULT_REFETCH_INTERVAL,
+      enabled:
+        !!id && !!daoConfig?.contracts?.governor && !!daoConfig?.chain?.id,
+    },
+  });
+
+  const isActive = useMemo(() => {
+    return ACTIVE_STATES.includes(proposalStatus?.data as ProposalState);
+  }, [proposalStatus?.data]);
+
+  const {
+    data: allData,
+    isPending,
+    refetch: refetchProposal,
+  } = useQuery({
+    queryKey: ["proposal", id, daoConfig?.indexer?.endpoint],
+    queryFn: () =>
+      proposalService.getAllProposals(daoConfig?.indexer.endpoint as string, {
+        where: {
+          proposalId_eq: id as string,
+        },
+      }),
+    enabled: !!id && !!daoConfig?.indexer.endpoint,
+    refetchInterval: isActive ? DEFAULT_REFETCH_INTERVAL : false,
+  });
+
+  const data = useMemo(() => {
+    if (allData?.[0]) {
+      const data = {
+        ...allData?.[0],
+      };
+
+      const parsedDescription = parseDescription(data?.description);
+
+      return {
+        ...data,
+        description: parsedDescription.mainText,
+        discussion: parsedDescription.discussion,
+        signatureContent: parsedDescription.signatureContent,
+        originalDescription: data?.description,
+      };
+    }
+    return undefined;
+  }, [allData]);
+
+  const proposalVotes = useReadContract({
+    address: daoConfig?.contracts?.governor as `0x${string}`,
+    abi: GovernorAbi,
+    functionName: "proposalVotes",
+    args: [data?.proposalId ? BigInt(data?.proposalId) : 0n],
+    chainId: daoConfig?.chain?.id,
+    query: {
+      refetchInterval: isActive ? DEFAULT_REFETCH_INTERVAL : false,
+      enabled:
+        !!data?.proposalId &&
+        !!daoConfig?.contracts?.governor &&
+        !!daoConfig?.chain?.id,
+    },
+  });
+
+  const [
+    {
+      data: proposalCanceledById,
+      isPending: isProposalCanceledByIdPending,
+      refetch: refetchProposalCanceledById,
+    },
+    {
+      data: proposalExecutedById,
+      isPending: isProposalExecutedByIdPending,
+      refetch: refetchProposalExecutedById,
+    },
+    {
+      data: proposalQueuedById,
+      isPending: isProposalQueuedByIdPending,
+      refetch: refetchProposalQueuedById,
+    },
+  ] = useQueries({
+    queries: [
+      {
+        queryKey: [
+          "proposalCanceledById",
+          data?.proposalId,
+          daoConfig?.indexer?.endpoint,
+        ],
+        queryFn: async () => {
+          const result = await proposalService.getProposalCanceledById(
+            daoConfig?.indexer?.endpoint as string,
+            data?.proposalId as string
+          );
+          return result ?? null;
+        },
+        enabled:
+          !isNil(data?.proposalId) && !isNil(daoConfig?.indexer?.endpoint),
+        refetchInterval: isActive ? DEFAULT_REFETCH_INTERVAL : false,
+      },
+      {
+        queryKey: [
+          "proposalExecutedById",
+          data?.proposalId,
+          daoConfig?.indexer?.endpoint,
+        ],
+        queryFn: async () => {
+          const result = await proposalService.getProposalExecutedById(
+            daoConfig?.indexer?.endpoint as string,
+            data?.proposalId as string
+          );
+          return result ?? null;
+        },
+        enabled:
+          !isNil(data?.proposalId) && !isNil(daoConfig?.indexer?.endpoint),
+        refetchInterval: isActive ? DEFAULT_REFETCH_INTERVAL : false,
+      },
+      {
+        queryKey: [
+          "proposalQueuedById",
+          data?.proposalId,
+          daoConfig?.indexer?.endpoint,
+        ],
+        queryFn: async () => {
+          const result = await proposalService.getProposalQueuedById(
+            daoConfig?.indexer?.endpoint as string,
+            data?.proposalId as string
+          );
+          return result ?? null;
+        },
+        enabled:
+          !isNil(data?.proposalId) && !isNil(daoConfig?.indexer?.endpoint),
+        refetchInterval: isActive ? DEFAULT_REFETCH_INTERVAL : false,
+      },
+    ],
+  });
+
+  const isAllQueriesFetching = [
+    isProposalCanceledByIdPending,
+    isProposalExecutedByIdPending,
+    isProposalQueuedByIdPending,
+  ].some((query) => query);
+
+  const proposalVotesData = useMemo(() => {
+    return {
+      againstVotes: proposalVotes.data?.[0] ?? 0n,
+      forVotes: proposalVotes.data?.[1] ?? 0n,
+      abstainVotes: proposalVotes.data?.[2] ?? 0n,
+    };
+  }, [proposalVotes.data]);
+
+  const refetchPageData = useCallback(() => {
+    refetchProposal();
+    proposalStatus?.refetch();
+    proposalVotes?.refetch();
+    [
+      refetchProposalCanceledById,
+      refetchProposalExecutedById,
+      refetchProposalQueuedById,
+    ].forEach((query) => query());
+  }, [
+    refetchProposal,
+    proposalStatus,
+    proposalVotes,
+    refetchProposalCanceledById,
+    refetchProposalExecutedById,
+    refetchProposalQueuedById,
+  ]);
+
+  if (!id) {
+    return <NotFound />;
+  }
+  return (
+    <div className="flex w-full flex-col gap-[20px] h-full min-h-0">
+      <div className="flex items-center gap-1 text-[18px] font-extrabold">
+        <Link
+          className="text-muted-foreground hover:underline"
+          href="/proposals"
+        >
+          Proposals
+        </Link>
+        <span className="text-muted-foreground">/</span>
+        <span>Proposal</span>
+      </div>
+
+      <div className="grid grid-cols-[minmax(0,1fr)_360px] gap-[20px] flex-1 min-h-0">
+        <div className="flex flex-col gap-[20px] min-h-0">
+          <div className="flex flex-col gap-[20px] rounded-[14px] bg-card p-[20px]">
+            <div className="flex items-center justify-between gap-[20px]">
+              {isPending ? (
+                <Skeleton className="h-[37px] w-[100px]" />
+              ) : (
+                <ProposalStatus
+                  status={proposalStatus?.data as ProposalState}
+                />
+              )}
+
+              <ActionGroup
+                data={data}
+                status={proposalStatus?.data as ProposalState}
+                proposalQueuedById={proposalQueuedById}
+                isAllQueriesFetching={isAllQueriesFetching}
+                onRefetch={refetchPageData}
+              />
+            </div>
+
+            <h2 className="text-[36px] font-extrabold flex items-center gap-[10px]">
+              {isPending ? (
+                <Skeleton className="h-[36px] w-[200px]" />
+              ) : (
+                <>
+                  {data?.title || `Proposal ${id}`}
+                  <ClipboardIconButton text={id as string} size={16} />
+                </>
+              )}
+            </h2>
+
+            <div className="flex items-center gap-[20px] text-[14px] text-muted-foreground">
+              <div className="flex items-center gap-[10px]">
+                <span>Proposed by</span>
+                {isPending ? (
+                  <Skeleton className="h-[20px] w-[120px]" />
+                ) : (
+                  <AddressWithAvatar address={data?.proposer} />
+                )}
+              </div>
+              <div className="flex items-center gap-[10px]">
+                <span>Created</span>
+                {isPending ? (
+                  <Skeleton className="h-[20px] w-[100px]" />
+                ) : (
+                  <span>
+                    {formatTimestampToFriendlyDate(data?.blockTimestamp)}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-[20px]">
+              {isPending ? (
+                <Skeleton className="h-[100px] w-full" />
+              ) : (
+                <div
+                  className="prose prose-sm max-w-none dark:prose-invert"
+                  dangerouslySetInnerHTML={{
+                    __html: data?.description || "",
+                  }}
+                />
+              )}
+            </div>
+          </div>
+
+          <Tabs
+            data={data}
+            status={proposalStatus?.data as ProposalState}
+            proposalVotesData={proposalVotesData}
+            proposalCanceledById={proposalCanceledById}
+            proposalExecutedById={proposalExecutedById}
+            proposalQueuedById={proposalQueuedById}
+            isAllQueriesFetching={isAllQueriesFetching}
+            onRefetch={refetchPageData}
+          />
+        </div>
+
+        <div className="flex flex-col gap-[20px]">
+          <Status
+            data={data}
+            status={proposalStatus?.data as ProposalState}
+            proposalVotesData={proposalVotesData}
+            proposalCanceledById={proposalCanceledById}
+            proposalExecutedById={proposalExecutedById}
+            proposalQueuedById={proposalQueuedById}
+            isAllQueriesFetching={isAllQueriesFetching}
+            onRefetch={refetchPageData}
+          />
+
+          <CurrentVotes
+            data={data}
+            status={proposalStatus?.data as ProposalState}
+            proposalVotesData={proposalVotesData}
+            proposalCanceledById={proposalCanceledById}
+            proposalExecutedById={proposalExecutedById}
+            proposalQueuedById={proposalQueuedById}
+            isAllQueriesFetching={isAllQueriesFetching}
+            onRefetch={refetchPageData}
+          />
+
+          <Faqs type="proposal" />
+        </div>
+      </div>
+    </div>
+  );
+} 
